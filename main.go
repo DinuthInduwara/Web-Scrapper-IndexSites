@@ -3,24 +3,27 @@ package main
 import (
 	"log"
 	"path"
+	"sync"
 	"webscrapper/db"
 	"webscrapper/funcs"
 )
 
-func workerLoop() {
-
+func truncateTextFromEnd(text string, maxLength int) string {
+	if len(text) > maxLength {
+		startIndex := len(text) - maxLength
+		return "..." + text[startIndex:]
+	}
+	return text
 }
 
-func main() {
-	funcs.URL = &funcs.MyURL{} //Todo  -  Change this
-	funcs.URL.SetUrl("https://iheartwatson.net/gallery/albums/images/Appearances/2020/2023/0312-EltonJohnFoundation/iheartwatson-20230312-eltonjohnfoundation-001.jpeg")
-	log.Println("[S] Web Crawling Bot Started \t.:")
-
-	localPath := funcs.URL.GetLocalPath()
-
-	response, _ := funcs.SendReq(funcs.URL.Parser.String()) // Todo -Change url
+func workerLoop(Url *funcs.MyURL, group *sync.WaitGroup, semaphore *funcs.Semaphore) {
+	group.Add(1)
+	semaphore.Acquire()
+	defer semaphore.Release()
+	defer group.Done()
+	localPath := Url.GetLocalPath()
+	response, _ := funcs.SendReq(Url.Parser.String()) // Todo -Change url
 	defer funcs.CloseReqBody(response)
-
 	isHtml := funcs.IsHtmlFile(response)
 
 	if isHtml {
@@ -28,7 +31,7 @@ func main() {
 		isExits := funcs.IsExits(htmlFName)
 		if !isExits {
 			funcs.CreateSubDirsFromFile(htmlFName)
-			log.Println("[H] Html File Downloading \t.:", htmlFName)
+			log.Println("[H] Html File Downloading \t.:", truncateTextFromEnd(htmlFName, 75))
 			err := funcs.SaveReqBody(response, htmlFName)
 			if err != nil {
 				log.Panic(err)
@@ -36,9 +39,10 @@ func main() {
 			}
 		}
 		urls, err := funcs.PhraseHtmlATags(&htmlFName)
-		for _, url := range *urls {
-			// Todo - Loop over the function
-			url = url
+		for _, i := range *urls {
+			url := &funcs.MyURL{}
+			url.SetUrl(i)
+			go workerLoop(url, group, semaphore)
 		}
 		if err != nil {
 			log.Panic(err)
@@ -47,19 +51,18 @@ func main() {
 
 	} else {
 		inDb := db.IsinDb(&db.TFile{
-			Url:  funcs.URL.Parser.String(), // Todo - change url
+			Url:  response.Request.URL.String(),
 			Size: response.ContentLength,
 		})
 		if !inDb {
 			funcs.CreateSubDirsFromFile(localPath)
-			log.Println("[D] File Downloading \t.:", localPath)
+			log.Println("[D] File Downloading \t.:", truncateTextFromEnd(localPath, 75))
 			err := funcs.SaveReqBody(response, localPath)
 			if err != nil {
 				log.Panic("[E] File Downloading Err \t.:", err)
 				return
 			} else {
 				err := db.AddFileToDb(&db.TFile{Url: response.Request.URL.String(), Size: response.ContentLength})
-				log.Println("File adder and err is ", err)
 				if err != nil {
 					panic(err)
 				}
@@ -67,4 +70,16 @@ func main() {
 		}
 	}
 
+}
+
+func main() {
+	funcs.URL = &funcs.MyURL{}
+	funcs.URL.SetUrl("https://iheartwatson.net/gallery/albums/images")
+	log.Println("[S] Web Crawling Bot Started [S]")
+	semaphore := funcs.NewSemaphore(1)
+
+	var wg sync.WaitGroup
+	workerLoop(funcs.URL, &wg, semaphore)
+
+	wg.Wait()
 }
