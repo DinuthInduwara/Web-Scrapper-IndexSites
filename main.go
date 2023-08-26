@@ -17,10 +17,15 @@ func truncateTextFromEnd(text string, maxLength int) string {
 }
 
 func workerLoop(Url *funcs.MyURL, group *sync.WaitGroup, semaphore *funcs.Semaphore) {
-	group.Add(1)
+
 	semaphore.Acquire()
 	defer semaphore.Release()
 	defer group.Done()
+
+	if db.IsUrlInDatabase(Url.Parser.String()) {
+		return
+	}
+
 	localPath := Url.GetLocalPath()
 	response, _ := funcs.SendReq(Url.Parser.String()) // Todo -Change url
 	defer funcs.CloseReqBody(response)
@@ -42,6 +47,7 @@ func workerLoop(Url *funcs.MyURL, group *sync.WaitGroup, semaphore *funcs.Semaph
 		for _, i := range *urls {
 			url := &funcs.MyURL{}
 			url.SetUrl(i)
+			group.Add(1)
 			go workerLoop(url, group, semaphore)
 		}
 		if err != nil {
@@ -50,35 +56,41 @@ func workerLoop(Url *funcs.MyURL, group *sync.WaitGroup, semaphore *funcs.Semaph
 		}
 
 	} else {
-		inDb := db.IsinDb(&db.TFile{
-			Url:  response.Request.URL.String(),
-			Size: response.ContentLength,
-		})
-		if !inDb {
+		// inDb := db.IsinDb(&db.TFile{
+		// 	Url:  response.Request.URL.String(),
+		// 	Size: response.ContentLength,
+		// })
+		// if !inDb {
+		if !funcs.IsExits(path.Dir(localPath)) {
 			funcs.CreateSubDirsFromFile(localPath)
-			log.Println("[D] File Downloading \t.:", truncateTextFromEnd(localPath, 75))
-			err := funcs.SaveReqBody(response, localPath)
+		}
+		log.Println("[D] File Downloading \t", filesCount, truncateTextFromEnd(localPath, 75))
+		err := funcs.SaveReqBody(response, localPath)
+		filesCount += 1
+		if err != nil {
+			log.Panic("[E] File Downloading Err \t.:", err)
+			return
+		} else {
+			err := db.AddFileToDb(&db.TFile{Url: response.Request.URL.String(), Size: response.ContentLength})
 			if err != nil {
-				log.Panic("[E] File Downloading Err \t.:", err)
-				return
-			} else {
-				err := db.AddFileToDb(&db.TFile{Url: response.Request.URL.String(), Size: response.ContentLength})
-				if err != nil {
-					panic(err)
-				}
+				panic(err)
 			}
 		}
+		// }
 	}
 
 }
+
+var filesCount = db.DocumentsCount()
 
 func main() {
 	funcs.URL = &funcs.MyURL{}
 	funcs.URL.SetUrl("https://iheartwatson.net/gallery/albums/images")
 	log.Println("[S] Web Crawling Bot Started [S]")
-	semaphore := funcs.NewSemaphore(1)
+	semaphore := funcs.NewSemaphore(150)
 
 	var wg sync.WaitGroup
+	wg.Add(1)
 	workerLoop(funcs.URL, &wg, semaphore)
 
 	wg.Wait()
